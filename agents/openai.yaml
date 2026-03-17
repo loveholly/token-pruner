@@ -1,0 +1,4 @@
+interface:
+  display_name: "Token Pruner"
+  short_description: "Prune structured payloads before they hit the model context"
+  default_prompt: "Shrink a structured payload for LLM use by profiling it, removing semantic noise, and choosing between compact JSON and TOON based on the payload shape."
