@@ -57,6 +57,69 @@ def download_file(url: str, destination: Path) -> None:
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req) as response, destination.open("wb") as handle:  # noqa: S310
         shutil.copyfileobj(response, handle)
+        return response.geturl()
+
+
+def direct_asset_url(repo: str, tag: str, asset_name: str) -> str:
+    if tag == "latest":
+        return f"https://github.com/{repo}/releases/latest/download/{asset_name}"
+    return f"https://github.com/{repo}/releases/download/{tag}/{asset_name}"
+
+
+def resolve_tag_from_url(url: str, fallback: str) -> str:
+    match = re.search(r"/releases/download/(?P<tag>[^/]+)/", url)
+    if not match:
+        return fallback
+    return match.group("tag")
+
+
+def resolve_tag_with_gh(repo: str, tag: str) -> str | None:
+    if tag != "latest":
+        return tag
+    if shutil.which("gh") is None:
+        return None
+    completed = subprocess.run(
+        ["gh", "release", "view", "--repo", repo, "--json", "tagName"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return None
+    resolved = payload.get("tagName")
+    return resolved if isinstance(resolved, str) and resolved else None
+
+
+def download_with_gh(repo: str, tag: str, asset_name: str, destination: Path) -> str | None:
+    if shutil.which("gh") is None:
+        return None
+    resolved_tag = resolve_tag_with_gh(repo, tag)
+    if resolved_tag is None:
+        return None
+    completed = subprocess.run(
+        [
+            "gh",
+            "release",
+            "download",
+            resolved_tag,
+            "--repo",
+            repo,
+            "--pattern",
+            asset_name,
+            "--dir",
+            str(destination.parent),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    return resolved_tag
 
 
 def detect_repo_from_git() -> str | None:
@@ -117,7 +180,10 @@ def safe_extract_tar(archive_path: Path, destination_root: Path) -> Path:
             member_path = (destination_root / member.name).resolve()
             if not str(member_path).startswith(str(destination_root.resolve())):
                 raise SystemExit(f"Refusing to extract suspicious path: {member.name}")
-        archive.extractall(destination_root)
+        try:
+            archive.extractall(destination_root, filter="data")
+        except TypeError:
+            archive.extractall(destination_root)
     extracted = destination_root / "vendor"
     if not extracted.exists():
         raise SystemExit("Bundle did not contain a top-level vendor directory.")
@@ -146,19 +212,26 @@ def main() -> int:
     asset_name = args.asset_name or expected_asset_name()
     destination = Path(args.destination).expanduser().resolve()
 
-    release = request_json(release_url(repo, args.tag))
-    asset = select_asset(release, asset_name)
-
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_root = Path(temp_dir)
         archive_path = temp_root / asset_name
-        download_file(asset["browser_download_url"], archive_path)
+        resolved_tag: str | None = None
+        try:
+            final_url = download_file(direct_asset_url(repo, args.tag, asset_name), archive_path)
+            resolved_tag = resolve_tag_from_url(final_url, args.tag)
+        except Exception:  # noqa: BLE001
+            resolved_tag = download_with_gh(repo, args.tag, asset_name, archive_path)
+        if resolved_tag is None:
+            release = request_json(release_url(repo, args.tag))
+            asset = select_asset(release, asset_name)
+            resolved_tag = release.get("tag_name")
+            download_file(asset["browser_download_url"], archive_path)
         extracted = safe_extract_tar(archive_path, temp_root / "extract")
         replace_destination(extracted, destination)
 
     result = {
         "repo": repo,
-        "tag": release.get("tag_name"),
+        "tag": resolved_tag,
         "asset_name": asset_name,
         "destination": str(destination),
     }
