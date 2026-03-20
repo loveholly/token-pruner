@@ -2,7 +2,7 @@
 name: token-pruner
 description: Reduce LLM context cost for structured payloads and noisy CLI output. Use when the user wants to shrink JSON, NDJSON, API responses, test logs, git output, tabular exports, or command output before sending it to Codex or Claude Code, especially with RTK, jq, TOON, qsv, or jc.
 owner: b.wen
-last_updated: 2026-03-17
+last_updated: 2026-03-20
 source_of_truth: true
 ---
 
@@ -22,7 +22,7 @@ python3 "<skill-dir>/scripts/token_pruner.py" doctor
 If this is a fresh source checkout and the vendor tree is still empty, install first:
 
 ```bash
-python3 "<skill-dir>/scripts/install_system.py" --codex-only
+python3 "<skill-dir>/scripts/bootstrap.py" --codex-only
 ```
 
 3. Probe bundled and local tooling paths when needed:
@@ -61,9 +61,10 @@ python3 "<skill-dir>/scripts/token_pruner.py" tool rtk git status
   The installer prefers a matching GitHub Release bundle and falls back to local bootstrap when needed.
 
 ```bash
-python3 "<skill-dir>/scripts/install_system.py"
+python3 "<skill-dir>/scripts/bootstrap.py"
 ```
 
+- The compatibility entrypoint `scripts/install_system.py` still works, but `bootstrap.py` is the preferred name because it also prepares missing vendor dependencies.
 - Codex install target: `~/.codex/skills/token-pruner`
 - Claude install target: `~/.claude/skills/token-pruner`
 - The installer preserves existing Claude settings, merges the global Bash hook, and writes a managed section into `~/.claude/CLAUDE.md`.

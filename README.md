@@ -33,7 +33,8 @@ This project treats token reduction as a routing problem:
 - [`SKILL.md`](./SKILL.md): Codex skill entrypoint
 - [`CLAUDE.md`](./CLAUDE.md): Claude Code project notes
 - [`scripts/token_pruner.py`](./scripts/token_pruner.py): main CLI
-- [`scripts/install_system.py`](./scripts/install_system.py): system-level install for Codex and Claude Code
+- [`scripts/bootstrap.py`](./scripts/bootstrap.py): preferred bootstrap entrypoint
+- [`scripts/install_system.py`](./scripts/install_system.py): compatibility wrapper for the old entrypoint
 - [`scripts/fetch_vendor_bundle.py`](./scripts/fetch_vendor_bundle.py): download prebuilt vendor bundle from GitHub Releases
 - [`scripts/bootstrap_vendor.py`](./scripts/bootstrap_vendor.py): local fallback when no prebuilt bundle is available
 - [`scripts/package_vendor_bundle.py`](./scripts/package_vendor_bundle.py): maintainer script for release assets
@@ -43,7 +44,7 @@ This project treats token reduction as a routing problem:
 Run a system install from this checkout:
 
 ```bash
-python3 scripts/install_system.py
+python3 scripts/bootstrap.py
 ```
 
 What it does:
@@ -52,7 +53,14 @@ What it does:
 - installs the Claude bundle into `~/.claude/skills/token-pruner`
 - merges the global Claude Bash hook into `~/.claude/settings.json`
 - writes a managed token-pruner block into `~/.claude/CLAUDE.md`
-- ensures a vendor toolchain exists first
+- checks whether `scripts/vendor` is already usable
+- automatically fetches or bootstraps vendor tools when missing
+
+The older command still works:
+
+```bash
+python3 scripts/install_system.py
+```
 
 The installer prefers a prebuilt GitHub Release asset for the current platform. If no matching asset exists, it falls back to [`bootstrap_vendor.py`](./scripts/bootstrap_vendor.py).
 
@@ -112,7 +120,7 @@ Instead:
 
 - source code stays lightweight
 - release assets carry the platform-specific vendor bundle
-- `install_system.py` fetches the bundle automatically when needed
+- `bootstrap.py` fetches the bundle automatically when needed
 - `bootstrap_vendor.py` remains as the fallback path
 
 ## Current Runtime Assumptions

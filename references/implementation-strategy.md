@@ -82,5 +82,5 @@ Build `token-pruner` as a hybrid orchestrator. Keep `scripts/vendor` as the runt
 ## Next Actions
 
 - Add project-local tool resolution so `token_pruner.py` prefers vendored binaries and wrappers.
-- Publish the current platform's vendor tree as a release asset and teach the installer to fetch it automatically.
+- Publish the current platform's vendor tree as a release asset and teach the bootstrap entrypoint to fetch it automatically.
 - Add true token measurement when a stable tokenizer choice is available for the target model set.

@@ -34,7 +34,7 @@ BOOTSTRAP_VENDOR_SCRIPT = SCRIPT_DIR / "bootstrap_vendor.py"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Install token-pruner into Codex and Claude Code system locations."
+        description="Bootstrap token-pruner by ensuring vendor tools exist and installing system-level copies."
     )
     parser.add_argument("--codex-only", action="store_true", help="Install only into the Codex skill directory.")
     parser.add_argument("--claude-only", action="store_true", help="Install only into the Claude Code global directory.")
@@ -263,6 +263,10 @@ def main() -> int:
     json.dump(result, fp=os.sys.stdout, ensure_ascii=False, indent=2)
     os.sys.stdout.write("\n")
     return 0
+
+
+def bootstrap() -> int:
+    return main()
 
 
 if __name__ == "__main__":
