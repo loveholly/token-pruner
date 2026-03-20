@@ -1,6 +1,6 @@
 ---
 owner: b.wen
-last_updated: 2026-03-17
+last_updated: 2026-03-20
 source_of_truth: true
 ---
 
@@ -29,6 +29,10 @@ source_of_truth: true
 3. Runtime assumptions:
    - Python 3 for orchestration and vendored Python packages
    - Node.js for the vendored TOON CLI wrapper
+4. Distribution preference:
+   - Keep `scripts/vendor` out of normal source control when possible
+   - Ship prebuilt vendor bundles through GitHub Releases
+   - Let the installer fetch the matching asset before falling back to bootstrap
 
 ## Default Routing Rules
 

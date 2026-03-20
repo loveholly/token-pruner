@@ -19,6 +19,12 @@ Use this skill when the expensive part of the context is structured data or nois
 python3 "<skill-dir>/scripts/token_pruner.py" doctor
 ```
 
+If this is a fresh source checkout and the vendor tree is still empty, install first:
+
+```bash
+python3 "<skill-dir>/scripts/install_system.py" --codex-only
+```
+
 3. Probe bundled and local tooling paths when needed:
 
 ```bash
@@ -52,6 +58,7 @@ python3 "<skill-dir>/scripts/token_pruner.py" tool rtk git status
 ## System Install
 
 - To install this bundle into Codex and Claude Code system locations on the current machine:
+  The installer prefers a matching GitHub Release bundle and falls back to local bootstrap when needed.
 
 ```bash
 python3 "<skill-dir>/scripts/install_system.py"
@@ -100,7 +107,7 @@ python3 "<skill-dir>/scripts/install_system.py"
 
 ## Guardrails
 
-- Current vendored binaries target `macOS arm64`. On other platforms, including Linux-based remote agents or cloud sandboxes, do not assume the bundled binaries will run.
+- Current prebuilt vendor bundle targets `macOS arm64`. On other platforms, including Linux-based remote agents or cloud sandboxes, do not assume the release asset or bootstrap path will succeed unchanged.
 - The project bundles helper CLIs, but it still requires a working `python3` runtime. The bundled TOON wrapper also requires a working `node` runtime.
 - Do not use this skill for normal source-code reading unless the source has already been turned into structured metadata.
 - Do not hide critical evidence just to save tokens.

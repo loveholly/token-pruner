@@ -1,6 +1,7 @@
 # Claude Notes
 
-This project vendors its token-reduction toolchain under `scripts/vendor`.
+This project uses a vendored token-reduction toolchain under `scripts/vendor`.
+If the directory is missing in a fresh checkout, run `python3 scripts/install_system.py --claude-only` or `python3 scripts/fetch_vendor_bundle.py` first.
 
 ## Bash Routing
 

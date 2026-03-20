@@ -6,6 +6,8 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,7 @@ from typing import Any
 
 SKILL_NAME = "token-pruner"
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = SOURCE_ROOT / "scripts"
 HOME = Path.home()
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", HOME / ".codex")).expanduser()
 CLAUDE_HOME = HOME / ".claude"
@@ -24,6 +27,9 @@ CLAUDE_HOOK_COMMAND = f"python3 {CLAUDE_TARGET / '.claude' / 'hooks' / 'rtk_pre_
 CLAUDE_BLOCK_START = "<!-- token-pruner:start -->"
 CLAUDE_BLOCK_END = "<!-- token-pruner:end -->"
 COPY_IGNORE = shutil.ignore_patterns(".git", ".DS_Store", "__pycache__", "*.pyc")
+VENDOR_DIR = SCRIPT_DIR / "vendor"
+FETCH_VENDOR_SCRIPT = SCRIPT_DIR / "fetch_vendor_bundle.py"
+BOOTSTRAP_VENDOR_SCRIPT = SCRIPT_DIR / "bootstrap_vendor.py"
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +43,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Replace existing install directories in place instead of moving them to timestamped backups first.",
     )
+    parser.add_argument(
+        "--prefer-bootstrap",
+        action="store_true",
+        help="Build the local vendor tree instead of downloading a release asset first.",
+    )
+    parser.add_argument("--vendor-repo", help="Override the GitHub repo used for prebuilt vendor bundle downloads.")
+    parser.add_argument("--vendor-tag", default="latest", help="Release tag used for vendor bundle downloads.")
     return parser.parse_args()
 
 
@@ -71,6 +84,71 @@ def install_tree(target: Path, no_backup: bool) -> dict[str, str | None]:
         "target": str(target),
         "backup": str(backup) if backup else None,
     }
+
+
+def vendor_ready() -> bool:
+    expected = (
+        VENDOR_DIR / "bin" / "rtk",
+        VENDOR_DIR / "bin" / "jq",
+        VENDOR_DIR / "bin" / "qsv",
+        VENDOR_DIR / "bin" / "jc",
+        VENDOR_DIR / "bin" / "toon",
+    )
+    return all(path.exists() for path in expected)
+
+
+def run_step(command: list[str]) -> tuple[bool, str]:
+    completed = subprocess.run(
+        command,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    combined = "\n".join(part for part in (completed.stdout.strip(), completed.stderr.strip()) if part)
+    return completed.returncode == 0, combined
+
+
+def ensure_vendor_tree(args: argparse.Namespace) -> dict[str, Any]:
+    if vendor_ready():
+        return {"strategy": "existing", "vendor_dir": str(VENDOR_DIR)}
+
+    attempts: list[dict[str, Any]] = []
+
+    if not args.prefer_bootstrap:
+        fetch_command = [sys.executable, str(FETCH_VENDOR_SCRIPT), "--destination", str(VENDOR_DIR), "--tag", args.vendor_tag]
+        if args.vendor_repo:
+            fetch_command.extend(["--repo", args.vendor_repo])
+        ok, output = run_step(fetch_command)
+        attempts.append(
+            {
+                "strategy": "release_asset",
+                "ok": ok,
+                "details": output,
+            }
+        )
+        if ok and vendor_ready():
+            return {
+                "strategy": "release_asset",
+                "vendor_dir": str(VENDOR_DIR),
+                "attempts": attempts,
+            }
+
+    ok, output = run_step([sys.executable, str(BOOTSTRAP_VENDOR_SCRIPT)])
+    attempts.append(
+        {
+            "strategy": "bootstrap",
+            "ok": ok,
+            "details": output,
+        }
+    )
+    if ok and vendor_ready():
+        return {
+            "strategy": "bootstrap",
+            "vendor_dir": str(VENDOR_DIR),
+            "attempts": attempts,
+        }
+
+    raise SystemExit(json.dumps({"error": "Failed to prepare vendor toolchain.", "attempts": attempts}, ensure_ascii=False, indent=2))
 
 
 def load_json(path: Path) -> Any:
@@ -163,6 +241,7 @@ def main() -> int:
 
     result: dict[str, Any] = {
         "source": str(SOURCE_ROOT),
+        "vendor": ensure_vendor_tree(args),
         "installed": {},
     }
 

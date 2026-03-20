@@ -1,6 +1,6 @@
 ---
 owner: b.wen
-last_updated: 2026-03-17
+last_updated: 2026-03-20
 source_of_truth: true
 ---
 
@@ -49,16 +49,23 @@ The waste is usually caused by repeated field names, irrelevant fields, oversize
 - Vendor binaries or local runtime packages under `scripts/vendor` so the user does not have to install `rtk`, `jq`, `qsv`, `jc`, or `TOON` separately.
 - Prefer project-local wrappers and binaries over whatever happens to be on the user's PATH.
 
+### Option 5: Lightweight Source + Release Bundle
+
+- Keep the repository source tree small.
+- Publish `scripts/vendor` as a GitHub Release asset per platform.
+- Let the installer fetch the right asset automatically and fall back to bootstrap only when needed.
+
 ## Decision
 
-Build `token-pruner` as a hybrid orchestrator and bundle its toolchain under `scripts/vendor` for the current platform, with RTK as the first-stage reducer for supported shell commands.
+Build `token-pruner` as a hybrid orchestrator. Keep `scripts/vendor` as the runtime layout, but distribute it through platform-specific release assets instead of tracking the bundle directly in source control. Use RTK as the first-stage reducer for supported shell commands.
 
 ## Reasons
 
 - RTK attacks a different and important class of waste than TOON or `jq`: command-output boilerplate.
 - The hard problem is selecting and reshaping the right information, not just encoding it differently.
 - TOON is valuable, but only as a conditional backend for the right payload shapes.
-- Bundling the toolchain removes setup friction and makes the skill behavior more reproducible.
+- Bundling the toolchain still removes setup friction and keeps behavior reproducible.
+- Release assets keep clone and review cost lower than committing heavy binaries into the repository.
 - A project-local Claude Code hook lets us apply RTK before command output reaches the model, instead of relying only on manual command discipline.
 - The wrapper can keep the skill body small and push logic into scripts, which is better for the skill's own token footprint.
 
@@ -67,12 +74,13 @@ Build `token-pruner` as a hybrid orchestrator and bundle its toolchain under `sc
 - A naive wrapper can over-prune and remove evidence the model needs.
 - Estimated token savings can be misleading when measured by bytes or rough heuristics.
 - RTK's own telemetry is useful, but its internal accounting is still a tool-specific estimate and not the target model's tokenizer in every case.
-- Vendored binaries are platform-specific and increase repository size.
+- Vendored binaries are platform-specific and still need a distribution path.
+- Tracking large binaries directly in git makes the repository heavier than necessary.
 - Some tools are easier to vendor than others. `jq` on macOS may require bundling dependent libraries; TOON CLI uses a Node runtime.
 - Claude Code only allows `updatedInput` when the hook returns a permission decision, so hook-driven rewrites must choose between `allow` and `ask`. This project uses a mixed strategy: read-only rewrites may auto-allow, while higher-risk commands use `ask`.
 
 ## Next Actions
 
 - Add project-local tool resolution so `token_pruner.py` prefers vendored binaries and wrappers.
-- Vendor the current platform's binaries and runtime packages under `scripts/vendor`.
+- Publish the current platform's vendor tree as a release asset and teach the installer to fetch it automatically.
 - Add true token measurement when a stable tokenizer choice is available for the target model set.
