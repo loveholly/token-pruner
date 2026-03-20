@@ -4,16 +4,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import shlex
 import shutil
 import statistics
 import subprocess
 import sys
+import platform
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 
-TOOLS = ("jq", "gojq", "toon", "qsv", "jc")
+SCRIPT_DIR = Path(__file__).resolve().parent
+VENDOR_DIR = SCRIPT_DIR / "vendor"
+VENDOR_BIN_DIR = VENDOR_DIR / "bin"
+
+TOOLS = ("rtk", "jq", "gojq", "toon", "qsv", "jc")
+CONTROL_TOKENS = {"|", "||", "&&", ";", ">", ">>", "<", "<<", "2>", "2>>", "&"}
+SAFE_RTK_GIT_SUBCOMMANDS = {"status", "diff", "log", "show", "branch", "worktree"}
+TOOL_SMOKE_ARGS = {
+    "rtk": ["--version"],
+    "jq": ["--version"],
+    "gojq": ["--version"],
+    "toon": ["--help"],
+    "qsv": ["--version"],
+    "jc": ["--version"],
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,9 +40,20 @@ def parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("probe", help="Show which helper tools are available.")
+    subparsers.add_parser("doctor", help="Verify vendored tools actually run on this machine.")
 
     profile = subparsers.add_parser("profile", help="Analyze JSON shape and suggest a strategy.")
     profile.add_argument("--input", help="Path to a JSON file. Reads stdin when omitted.")
+
+    rewrite = subparsers.add_parser(
+        "rewrite-bash",
+        help="Rewrite a simple Bash command to a vendored RTK command when safe.",
+    )
+    rewrite.add_argument("--command", dest="bash_command", required=True, help="Original Bash command string.")
+
+    tool = subparsers.add_parser("tool", help="Run a vendored helper tool by name.")
+    tool.add_argument("tool_name", choices=TOOLS, help="Tool to execute.")
+    tool.add_argument("tool_args", nargs=argparse.REMAINDER, help="Arguments passed to the tool.")
 
     prune = subparsers.add_parser("prune", help="Prune and render a JSON payload.")
     prune.add_argument("--input", help="Path to a JSON file. Reads stdin when omitted.")
@@ -90,8 +118,274 @@ def load_json(path_str: str | None) -> Any:
         raise SystemExit(f"Input is not valid JSON: {exc}") from exc
 
 
+def resolve_tool(tool: str) -> str | None:
+    vendored = VENDOR_BIN_DIR / tool
+    if vendored.exists():
+        return str(vendored)
+    return shutil.which(tool)
+
+
 def tool_status() -> dict[str, str | None]:
-    return {tool: shutil.which(tool) for tool in TOOLS}
+    return {tool: resolve_tool(tool) for tool in TOOLS}
+
+
+def tool_runtime_status(tool: str) -> dict[str, Any]:
+    tool_path = resolve_tool(tool)
+    result: dict[str, Any] = {
+        "path": tool_path,
+        "available": bool(tool_path),
+        "ok": False,
+    }
+    if not tool_path:
+        result["error"] = "not found"
+        return result
+
+    smoke_args = TOOL_SMOKE_ARGS.get(tool, ["--help"])
+    completed = subprocess.run(
+        [tool_path, *smoke_args],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    result["exit_code"] = completed.returncode
+    stdout = completed.stdout.strip()
+    stderr = completed.stderr.strip()
+    if completed.returncode == 0:
+        result["ok"] = True
+        sample = stdout or stderr
+        if sample:
+            result["sample"] = sample.splitlines()[0][:200]
+    else:
+        result["error"] = (stderr or stdout or "unknown error").splitlines()[0][:200]
+    return result
+
+
+def is_env_assignment(token: str) -> bool:
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", token))
+
+
+def shell_join(parts: list[str]) -> str:
+    return shlex.join(parts)
+
+
+def build_tool_command(tool_name: str, tool_args: list[str]) -> str:
+    return shell_join([sys.executable, str(SCRIPT_DIR / "token_pruner.py"), "tool", tool_name, *tool_args])
+
+
+def pass_through(reason: str) -> dict[str, Any]:
+    return {
+        "strategy": "pass_through",
+        "reason": reason,
+        "permission_decision": None,
+        "rewritten_command": None,
+    }
+
+
+def routed(strategy: str, reason: str, permission_decision: str, tool_args: list[str]) -> dict[str, Any]:
+    return {
+        "strategy": strategy,
+        "reason": reason,
+        "permission_decision": permission_decision,
+        "rewritten_command": build_tool_command("rtk", tool_args),
+    }
+
+
+def parse_find_command(tokens: list[str]) -> list[str] | None:
+    args = tokens[1:]
+    if not args:
+        return None
+
+    path = "."
+    file_type = None
+    pattern = None
+    idx = 0
+
+    if idx < len(args) and not args[idx].startswith("-"):
+        path = args[idx]
+        idx += 1
+
+    while idx < len(args):
+        token = args[idx]
+        if token == "-type" and idx + 1 < len(args):
+            candidate = args[idx + 1]
+            if candidate in {"f", "d"}:
+                file_type = candidate
+                idx += 2
+                continue
+            return None
+        if token in {"-name", "-iname"} and idx + 1 < len(args):
+            pattern = args[idx + 1]
+            idx += 2
+            continue
+        return None
+
+    if not pattern:
+        return None
+
+    command = ["find", pattern, path]
+    if file_type:
+        command.extend(["-t", file_type])
+    return command
+
+
+def rewrite_bash_command(command: str) -> dict[str, Any]:
+    if resolve_tool("rtk") is None:
+        return pass_through("Vendored RTK is not available.")
+
+    if not command.strip():
+        return pass_through("Empty command.")
+
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError as exc:
+        return pass_through(f"Command could not be parsed safely: {exc}")
+
+    if not tokens:
+        return pass_through("Empty command.")
+
+    if any(token in CONTROL_TOKENS for token in tokens):
+        return pass_through("Command uses shell control operators; skipping rewrite.")
+
+    if any(is_env_assignment(token) for token in tokens):
+        return pass_through("Command uses inline environment assignments; skipping rewrite.")
+
+    if tokens[0] in {"rtk", "sudo", "cd", "export", "set", "unset"}:
+        return pass_through("Command is already wrapped or uses a shell builtin.")
+
+    if "token_pruner.py" in command and " tool rtk " in f" {command} ":
+        return pass_through("Command is already routed through token-pruner.")
+
+    top = tokens[0]
+
+    if top == "git":
+        if len(tokens) < 2:
+            return pass_through("Bare `git` command is too broad to rewrite safely.")
+        subcommand = tokens[1]
+        if subcommand in SAFE_RTK_GIT_SUBCOMMANDS:
+            return routed(
+                strategy="rtk_git",
+                reason=f"Read-oriented git command rewritten to `rtk git {subcommand}`.",
+                permission_decision="allow",
+                tool_args=["git", *tokens[1:]],
+            )
+        if subcommand in {"add", "commit", "push", "pull", "fetch", "stash"}:
+            return routed(
+                strategy="rtk_git",
+                reason=f"`git {subcommand}` can use RTK, but Claude Code should show the rewritten command for confirmation.",
+                permission_decision="ask",
+                tool_args=["git", *tokens[1:]],
+            )
+        return pass_through(f"`git {subcommand}` is not in the supported RTK rewrite set.")
+
+    if top in {"ls", "tree"}:
+        return routed(
+            strategy=f"rtk_{top}",
+            reason=f"Read-oriented `{top}` command rewritten through RTK.",
+            permission_decision="allow",
+            tool_args=[top, *tokens[1:]],
+        )
+
+    if top == "find":
+        rewritten = parse_find_command(tokens)
+        if rewritten is None:
+            return pass_through("Only simple `find <path> -name <pattern> [-type f|d]` is auto-rewritten.")
+        return routed(
+            strategy="rtk_find",
+            reason="Simple find command rewritten through RTK.",
+            permission_decision="allow",
+            tool_args=rewritten,
+        )
+
+    if top == "grep":
+        if len(tokens) < 2:
+            return pass_through("Bare `grep` command is too broad to rewrite safely.")
+        pattern = None
+        path = "."
+        extras: list[str] = []
+        positional: list[str] = []
+        for token in tokens[1:]:
+            if token.startswith("-"):
+                extras.append(token)
+            else:
+                positional.append(token)
+        if positional:
+            pattern = positional[0]
+        if len(positional) > 1:
+            path = positional[1]
+        if pattern is None or len(positional) > 2:
+            return pass_through("Only simple `grep <pattern> [path] [flags]` is auto-rewritten.")
+        return routed(
+            strategy="rtk_grep",
+            reason="Simple grep command rewritten through RTK.",
+            permission_decision="allow",
+            tool_args=["grep", pattern, path, *extras],
+        )
+
+    if top == "cat" and len(tokens) == 2 and not tokens[1].startswith("-"):
+        return routed(
+            strategy="rtk_read",
+            reason="Single-file read rewritten to `rtk read`.",
+            permission_decision="allow",
+            tool_args=["read", tokens[1]],
+        )
+
+    if top == "diff" and 2 <= len(tokens[1:]) <= 2 and not any(arg.startswith("-") for arg in tokens[1:]):
+        return routed(
+            strategy="rtk_diff",
+            reason="Simple file diff rewritten through RTK.",
+            permission_decision="allow",
+            tool_args=["diff", *tokens[1:]],
+        )
+
+    if top == "gh":
+        return routed(
+            strategy="rtk_gh",
+            reason="GitHub CLI command rewritten through RTK and shown for confirmation.",
+            permission_decision="ask",
+            tool_args=["gh", *tokens[1:]],
+        )
+
+    if top == "cargo" and len(tokens) >= 2 and tokens[1] in {"build", "check", "clippy", "test", "install"}:
+        return routed(
+            strategy="rtk_cargo",
+            reason=f"`cargo {tokens[1]}` rewritten through RTK and shown for confirmation.",
+            permission_decision="ask",
+            tool_args=["cargo", *tokens[1:]],
+        )
+
+    if top in {"pytest", "pnpm", "npm", "npx", "pip", "docker", "kubectl", "curl", "wget", "ruff"}:
+        return routed(
+            strategy=f"rtk_{top.replace('-', '_')}",
+            reason=f"`{top}` command rewritten through RTK and shown for confirmation.",
+            permission_decision="ask",
+            tool_args=[top, *tokens[1:]],
+        )
+
+    if top in {"go", "golangci-lint", "vitest", "prisma", "tsc", "next", "playwright"}:
+        return routed(
+            strategy=f"rtk_{top.replace('-', '_')}",
+            reason=f"`{top}` command rewritten through RTK and shown for confirmation.",
+            permission_decision="ask",
+            tool_args=[top, *tokens[1:]],
+        )
+
+    if top == "python" and tokens[1:3] == ["-m", "pytest"]:
+        return routed(
+            strategy="rtk_test",
+            reason="`python -m pytest` rewritten to `rtk test` and shown for confirmation.",
+            permission_decision="ask",
+            tool_args=["test", *tokens],
+        )
+
+    if top == "uv" and tokens[1:3] == ["run", "pytest"]:
+        return routed(
+            strategy="rtk_test",
+            reason="`uv run pytest` rewritten to `rtk test` and shown for confirmation.",
+            permission_decision="ask",
+            tool_args=["test", *tokens],
+        )
+
+    return pass_through("No safe RTK rewrite rule matched this command.")
 
 
 def max_depth(value: Any) -> int:
@@ -274,7 +568,7 @@ def apply_array_pruning(value: Any, head: int | None, sample: int | None) -> Any
 
 
 def run_jq(filter_expr: str, value: Any) -> Any:
-    jq_path = shutil.which("jq") or shutil.which("gojq")
+    jq_path = resolve_tool("jq") or resolve_tool("gojq")
     if not jq_path:
         raise SystemExit("`jq` or `gojq` is required for --jq-filter.")
     payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
@@ -303,7 +597,7 @@ def render_json(value: Any, indent: int | None, sort_keys: bool) -> str:
 
 
 def render_toon(value: Any, key_folding: str) -> str:
-    toon_path = shutil.which("toon")
+    toon_path = resolve_tool("toon")
     if not toon_path:
         raise SystemExit("`toon` is not installed. Use --format json or install the TOON CLI.")
     command = [toon_path, "--encode"]
@@ -334,9 +628,37 @@ def command_probe() -> None:
     print(json.dumps(status, ensure_ascii=False, indent=2))
 
 
+def command_doctor() -> None:
+    report = {
+        "platform": {
+            "system": platform.system(),
+            "machine": platform.machine(),
+            "python": sys.version.split()[0],
+        },
+        "vendor_dir": str(VENDOR_DIR),
+        "tools": {
+            tool: tool_runtime_status(tool)
+            for tool in TOOLS
+        },
+    }
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+
+
 def command_profile(args: argparse.Namespace) -> None:
     data = load_json(args.input)
     print(json.dumps(profile_payload(data), ensure_ascii=False, indent=2))
+
+
+def command_rewrite_bash(args: argparse.Namespace) -> None:
+    print(json.dumps(rewrite_bash_command(args.bash_command), ensure_ascii=False, indent=2))
+
+
+def command_tool(args: argparse.Namespace) -> None:
+    tool_path = resolve_tool(args.tool_name)
+    if not tool_path:
+        raise SystemExit(f"Tool `{args.tool_name}` is not available.")
+    result = subprocess.run([tool_path, *args.tool_args], check=False)
+    raise SystemExit(result.returncode)
 
 
 def command_prune(args: argparse.Namespace) -> None:
@@ -366,8 +688,17 @@ def main() -> None:
     if args.command == "probe":
         command_probe()
         return
+    if args.command == "doctor":
+        command_doctor()
+        return
     if args.command == "profile":
         command_profile(args)
+        return
+    if args.command == "rewrite-bash":
+        command_rewrite_bash(args)
+        return
+    if args.command == "tool":
+        command_tool(args)
         return
     if args.command == "prune":
         command_prune(args)
