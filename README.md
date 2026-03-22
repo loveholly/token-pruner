@@ -14,9 +14,11 @@ The project routes different payloads through the most suitable reducer instead 
 
 - `rtk` for noisy developer command output
 - `jq` for JSON pruning and reshaping
+- `yq` for YAML/TOML field selection
 - `qsv` for table-first trimming
 - `jc` for normalizing CLI text into JSON
 - `TOON` only when the payload shape is a strong fit
+- Built-in ANSI stripping and output truncation for oversized results
 
 ## Why This Exists
 
@@ -24,9 +26,11 @@ Using TOON alone is not enough. Uniform arrays compress well, but nested or irre
 
 This project treats token reduction as a routing problem:
 
-1. remove semantic noise first
-2. only then pick the output format
-3. prefer stable, local tool paths so agent behavior stays reproducible
+1. prefer token-efficient commands at the source
+2. remove semantic noise first
+3. truncate oversized output (auto via hooks or explicit piping)
+4. only then pick the output format
+5. prefer stable, local tool paths so agent behavior stays reproducible
 
 ## Repository Layout
 
@@ -51,7 +55,7 @@ What it does:
 
 - installs the skill into `~/.codex/skills/token-pruner`
 - installs the Claude bundle into `~/.claude/skills/token-pruner`
-- merges the global Claude Bash hook into `~/.claude/settings.json`
+- merges the global Claude PreToolUse and PostToolUse hooks into `~/.claude/settings.json`
 - writes a managed token-pruner block into `~/.claude/CLAUDE.md`
 - checks whether `scripts/vendor` is already usable
 - automatically fetches or bootstraps vendor tools when missing
@@ -98,6 +102,18 @@ Route a command through vendored RTK:
 
 ```bash
 python3 scripts/token_pruner.py tool rtk git status
+```
+
+Truncate oversized output:
+
+```bash
+cargo test 2>&1 | python3 scripts/token_pruner.py truncate --max-lines 200
+```
+
+Measure token cost:
+
+```bash
+python3 scripts/token_pruner.py measure --input payload.json
 ```
 
 Preview Claude hook rewriting:
