@@ -84,3 +84,39 @@ Build `token-pruner` as a hybrid orchestrator. Keep `scripts/vendor` as the runt
 - Add project-local tool resolution so `token_pruner.py` prefers vendored binaries and wrappers.
 - Publish the current platform's vendor tree as a release asset and teach the bootstrap entrypoint to fetch it automatically.
 - Add true token measurement when a stable tokenizer choice is available for the target model set.
+
+## v2 Additions (2026-03-22)
+
+### PostToolUse Output Truncation
+
+- Added a `truncate` subcommand that keeps head + tail + summary line for oversized output.
+- Added a PostToolUse hook (`.claude/hooks/rtk_post_bash.py`) for Claude Code that auto-truncates Bash output exceeding 200 lines.
+- ANSI escape sequences are stripped by default (pure Python regex, no external dependency).
+- For agents without hook support (Codex, OpenCode), the same truncation is available via explicit piping: `<cmd> | python3 scripts/token_pruner.py truncate`.
+
+### Token Measurement
+
+- Added a `measure` subcommand that counts tokens using tiktoken (cl100k_base) when available.
+- Falls back to byte_count/4 estimate when tiktoken is not installed.
+- Enables concrete before/after comparisons instead of guesses.
+
+### yq Integration
+
+- Added `yq` (mikefarah/yq) to the vendored toolchain for YAML/TOML/XML field selection.
+- YAML is ubiquitous in k8s, CI, and Helm workflows. Selecting fields at the YAML level before converting to JSON is more efficient than converting first and pruning later.
+- Routing: `yq` commands are rewritten through RTK with `permissionDecision = ask`.
+
+### Agent Compatibility Strategy
+
+- Hook-based automation (PreToolUse + PostToolUse) is Claude Code specific.
+- The SKILL.md now includes:
+  - "Before Running Commands" section with zero-cost command patterns that work in any agent.
+  - Quick Decision Table for fast tool selection.
+  - Agent Compatibility matrix explaining how each agent type integrates.
+- For hookless agents, the key pattern is explicit piping through `truncate` and `prune`.
+
+### Risks
+
+- PostToolUse hooks may interfere with commands where the agent needs to see the full output (e.g., reading a specific log section). The 200-line default is conservative enough to mitigate this.
+- tiktoken is an optional dependency. The byte estimate is imprecise but directionally useful.
+- yq adds another vendored binary. Distribution strategy is the same as other tools (GitHub Release asset).

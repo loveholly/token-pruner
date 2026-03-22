@@ -23,7 +23,9 @@ CODEX_TARGET = CODEX_HOME / "skills" / SKILL_NAME
 CLAUDE_TARGET = CLAUDE_HOME / "skills" / SKILL_NAME
 CLAUDE_SETTINGS = CLAUDE_HOME / "settings.json"
 CLAUDE_MD = CLAUDE_HOME / "CLAUDE.md"
-CLAUDE_HOOK_COMMAND = f"python3 {CLAUDE_TARGET / '.claude' / 'hooks' / 'rtk_pre_bash.py'}"
+CLAUDE_PRE_HOOK_COMMAND = f"python3 {CLAUDE_TARGET / '.claude' / 'hooks' / 'rtk_pre_bash.py'}"
+CLAUDE_POST_HOOK_COMMAND = f"python3 {CLAUDE_TARGET / '.claude' / 'hooks' / 'rtk_post_bash.py'}"
+CLAUDE_HOOK_COMMAND = CLAUDE_PRE_HOOK_COMMAND
 CLAUDE_BLOCK_START = "<!-- token-pruner:start -->"
 CLAUDE_BLOCK_END = "<!-- token-pruner:end -->"
 COPY_IGNORE = shutil.ignore_patterns(".git", ".DS_Store", "__pycache__", "*.pyc")
@@ -93,6 +95,7 @@ def vendor_ready() -> bool:
         VENDOR_DIR / "bin" / "qsv",
         VENDOR_DIR / "bin" / "jc",
         VENDOR_DIR / "bin" / "toon",
+        VENDOR_DIR / "bin" / "yq",
     )
     return all(path.exists() for path in expected)
 
@@ -160,38 +163,38 @@ def load_json(path: Path) -> Any:
     return json.loads(raw)
 
 
-def ensure_claude_hook(settings: dict[str, Any]) -> bool:
-    hooks = settings.setdefault("hooks", {})
-    pre_tool_use = hooks.setdefault("PreToolUse", [])
-    for entry in pre_tool_use:
-        if entry.get("matcher") != "Bash":
+def _ensure_hook_entry(hook_list_root: list[dict[str, Any]], matcher: str, command: str) -> bool:
+    for entry in hook_list_root:
+        if entry.get("matcher") != matcher:
             continue
         hook_list = entry.setdefault("hooks", [])
         if any(
-            hook.get("type") == "command" and hook.get("command") == CLAUDE_HOOK_COMMAND
+            hook.get("type") == "command" and hook.get("command") == command
             for hook in hook_list
         ):
             return False
-        hook_list.append(
-            {
-                "type": "command",
-                "command": CLAUDE_HOOK_COMMAND,
-            }
-        )
+        hook_list.append({"type": "command", "command": command})
         return True
 
-    pre_tool_use.append(
+    hook_list_root.append(
         {
-            "matcher": "Bash",
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": CLAUDE_HOOK_COMMAND,
-                }
-            ],
+            "matcher": matcher,
+            "hooks": [{"type": "command", "command": command}],
         }
     )
     return True
+
+
+def ensure_claude_hook(settings: dict[str, Any]) -> bool:
+    hooks = settings.setdefault("hooks", {})
+    changed = False
+    pre_tool_use = hooks.setdefault("PreToolUse", [])
+    if _ensure_hook_entry(pre_tool_use, "Bash", CLAUDE_PRE_HOOK_COMMAND):
+        changed = True
+    post_tool_use = hooks.setdefault("PostToolUse", [])
+    if _ensure_hook_entry(post_tool_use, "Bash", CLAUDE_POST_HOOK_COMMAND):
+        changed = True
+    return changed
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -208,6 +211,7 @@ def build_claude_block() -> str:
         f"- Run `python3 {CLAUDE_TARGET / 'scripts' / 'token_pruner.py'} doctor` when you need a runtime check.",
         "- Prefer this bundle when JSON, NDJSON, tables, or noisy CLI output are the expensive part of the context.",
         "- A global Bash `PreToolUse` hook routes common read-oriented commands through vendored RTK automatically.",
+        "- A global Bash `PostToolUse` hook auto-truncates oversized command output (ANSI stripped, head+tail kept).",
         CLAUDE_BLOCK_END,
         "",
     ]

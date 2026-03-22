@@ -20,7 +20,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 VENDOR_DIR = SCRIPT_DIR / "vendor"
 VENDOR_BIN_DIR = VENDOR_DIR / "bin"
 
-TOOLS = ("rtk", "jq", "gojq", "toon", "qsv", "jc")
+TOOLS = ("rtk", "jq", "gojq", "toon", "qsv", "jc", "yq")
 CONTROL_TOKENS = {"|", "||", "&&", ";", ">", ">>", "<", "<<", "2>", "2>>", "&"}
 SAFE_RTK_GIT_SUBCOMMANDS = {"status", "diff", "log", "show", "branch", "worktree"}
 TOOL_SMOKE_ARGS = {
@@ -30,7 +30,13 @@ TOOL_SMOKE_ARGS = {
     "toon": ["--help"],
     "qsv": ["--version"],
     "jc": ["--version"],
+    "yq": ["--version"],
 }
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-B012]")
+
+DEFAULT_TRUNCATE_MAX_LINES = 200
+DEFAULT_TRUNCATE_TAIL_LINES = 20
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,6 +60,46 @@ def parse_args() -> argparse.Namespace:
     tool = subparsers.add_parser("tool", help="Run a vendored helper tool by name.")
     tool.add_argument("tool_name", choices=TOOLS, help="Tool to execute.")
     tool.add_argument("tool_args", nargs=argparse.REMAINDER, help="Arguments passed to the tool.")
+
+    truncate_parser = subparsers.add_parser(
+        "truncate",
+        help="Truncate large text output to head + tail with a summary line.",
+    )
+    truncate_parser.add_argument("--input", help="Path to a text file. Reads stdin when omitted.")
+    truncate_parser.add_argument(
+        "--max-lines",
+        type=int,
+        default=DEFAULT_TRUNCATE_MAX_LINES,
+        help=f"Maximum lines to keep (default {DEFAULT_TRUNCATE_MAX_LINES}).",
+    )
+    truncate_parser.add_argument(
+        "--tail",
+        type=int,
+        default=DEFAULT_TRUNCATE_TAIL_LINES,
+        help=f"Lines to keep from the end (default {DEFAULT_TRUNCATE_TAIL_LINES}).",
+    )
+    truncate_parser.add_argument(
+        "--strip-ansi",
+        action="store_true",
+        default=True,
+        help="Strip ANSI escape sequences (default: on).",
+    )
+    truncate_parser.add_argument(
+        "--no-strip-ansi",
+        action="store_true",
+        help="Disable ANSI escape stripping.",
+    )
+
+    measure_parser = subparsers.add_parser(
+        "measure",
+        help="Count tokens in text using tiktoken (falls back to byte estimate).",
+    )
+    measure_parser.add_argument("--input", help="Path to a text file. Reads stdin when omitted.")
+    measure_parser.add_argument(
+        "--encoding",
+        default="cl100k_base",
+        help="tiktoken encoding name (default: cl100k_base).",
+    )
 
     prune = subparsers.add_parser("prune", help="Prune and render a JSON payload.")
     prune.add_argument("--input", help="Path to a JSON file. Reads stdin when omitted.")
@@ -369,6 +415,14 @@ def rewrite_bash_command(command: str) -> dict[str, Any]:
             tool_args=[top, *tokens[1:]],
         )
 
+    if top == "yq":
+        return routed(
+            strategy="rtk_yq",
+            reason="`yq` command rewritten through RTK and shown for confirmation.",
+            permission_decision="ask",
+            tool_args=["yq", *tokens[1:]],
+        )
+
     if top == "python" and tokens[1:3] == ["-m", "pytest"]:
         return routed(
             strategy="rtk_test",
@@ -386,6 +440,52 @@ def rewrite_bash_command(command: str) -> dict[str, Any]:
         )
 
     return pass_through("No safe RTK rewrite rule matched this command.")
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", text)
+
+
+def truncate_text(text: str, max_lines: int, tail_lines: int, do_strip_ansi: bool) -> str:
+    if do_strip_ansi:
+        text = strip_ansi(text)
+
+    lines = text.splitlines(keepends=True)
+    total = len(lines)
+
+    if total <= max_lines:
+        return text
+
+    head_lines = max(max_lines - tail_lines, 1)
+    omitted = total - head_lines - tail_lines
+
+    head = lines[:head_lines]
+    tail = lines[-tail_lines:] if tail_lines > 0 else []
+    separator = f"\n... ({omitted} lines omitted, {total} total) ...\n\n"
+
+    return "".join(head) + separator + "".join(tail)
+
+
+def count_tokens(text: str, encoding_name: str) -> dict[str, Any]:
+    char_count = len(text)
+    byte_count = len(text.encode("utf-8"))
+    result: dict[str, Any] = {
+        "chars": char_count,
+        "bytes": byte_count,
+        "byte_estimate_tokens": byte_count // 4,
+        "encoding": encoding_name,
+        "tiktoken_available": False,
+    }
+    try:
+        import tiktoken  # type: ignore[import-untyped]
+        enc = tiktoken.get_encoding(encoding_name)
+        tokens = len(enc.encode(text))
+        result["tiktoken_available"] = True
+        result["tokens"] = tokens
+    except (ImportError, Exception):
+        result["tokens"] = result["byte_estimate_tokens"]
+        result["note"] = "tiktoken not available; using byte_count/4 estimate"
+    return result
 
 
 def max_depth(value: Any) -> int:
@@ -649,6 +749,21 @@ def command_profile(args: argparse.Namespace) -> None:
     print(json.dumps(profile_payload(data), ensure_ascii=False, indent=2))
 
 
+def command_truncate(args: argparse.Namespace) -> None:
+    text = read_input(args.input)
+    do_strip = args.strip_ansi and not args.no_strip_ansi
+    output = truncate_text(text, args.max_lines, args.tail, do_strip)
+    sys.stdout.write(output)
+    if output and not output.endswith("\n"):
+        sys.stdout.write("\n")
+
+
+def command_measure(args: argparse.Namespace) -> None:
+    text = read_input(args.input)
+    result = count_tokens(text, args.encoding)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 def command_rewrite_bash(args: argparse.Namespace) -> None:
     print(json.dumps(rewrite_bash_command(args.bash_command), ensure_ascii=False, indent=2))
 
@@ -693,6 +808,12 @@ def main() -> None:
         return
     if args.command == "profile":
         command_profile(args)
+        return
+    if args.command == "truncate":
+        command_truncate(args)
+        return
+    if args.command == "measure":
+        command_measure(args)
         return
     if args.command == "rewrite-bash":
         command_rewrite_bash(args)

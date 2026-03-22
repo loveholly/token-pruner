@@ -26,6 +26,7 @@ RTK_VERSION = "v0.15.2"
 QSV_VERSION = "9.1.0"
 JC_VERSION = "1.25.6"
 TOON_CLI_VERSION = "2.1.0"
+YQ_VERSION = "v4.44.6"
 
 
 def log(message: str) -> None:
@@ -297,6 +298,16 @@ def install_qsv() -> None:
     raise RuntimeError(f"Failed to install qsv from official releases: {last_error}") from last_error
 
 
+def install_yq() -> None:
+    install_github_binary(
+        repo="mikefarah/yq",
+        tag=YQ_VERSION,
+        name_hints=["yq"],
+        binary_names=["yq", "yq_darwin_arm64", "yq_darwin_amd64", "yq_linux_amd64", "yq_linux_arm64", "yq.exe"],
+        destination_name="yq",
+    )
+
+
 def install_all() -> None:
     ensure_dirs()
     install_local_jq_macos()
@@ -304,6 +315,7 @@ def install_all() -> None:
     install_qsv()
     install_jc()
     install_toon()
+    install_yq()
     log("Vendored toolchain ready.")
 
 
