@@ -11,7 +11,8 @@ If the directory is missing in a fresh checkout, run `python3 scripts/bootstrap.
   - YAML commands (`yq`) are also routed through RTK with `permissionDecision = ask`.
   - Higher-risk commands such as `cargo test`, `pytest`, `gh`, `docker`, `curl`, and package-manager commands are rewritten with `permissionDecision = ask`.
   - Complex shell pipelines and commands with control operators are not rewritten.
-- **PostToolUse** hook runs `.claude/hooks/rtk_post_bash.py`, which auto-truncates oversized output.
+- **PostToolUse** hook runs `.claude/hooks/rtk_post_bash.py`, which handles output dedup and truncation.
+  - **Dedup cache**: if the same command produces identical output as the previous run, replaces with a one-line summary (e.g., `(same output as previous run, 42 lines / 1830 bytes omitted)`). Cache is per-command in `$TMPDIR/token-pruner-cache/`, capped at 64 entries.
   - Strips ANSI escape sequences from output.
   - Keeps first 180 lines + last 20 lines when output exceeds 200 lines.
   - Inserts a summary line showing how many lines were omitted.
